@@ -17,6 +17,9 @@ class CPSTester:
         self.current_mode = None
         self.timer_thread = None
         self.timer_running = False
+        self.test_duration = 10  # Default 10 seconds
+        self.countdown_active = False
+        self.test_active = False
         
         # Store last CPS for each click type
         self.last_cps = {
@@ -79,6 +82,53 @@ class CPSTester:
         )
         self.cps_label.pack(pady=10)
         
+        # Duration selection frame
+        duration_frame = tk.Frame(self.root, bg='#2c2c2c')
+        duration_frame.pack(pady=5)
+        
+        tk.Label(
+            duration_frame,
+            text="Test Duration:",
+            font=('Arial', 12),
+            fg='white',
+            bg='#2c2c2c'
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Duration buttons
+        duration_5_btn = tk.Button(
+            duration_frame,
+            text="5s",
+            font=('Arial', 10, 'bold'),
+            bg='#f39c12',
+            fg='white',
+            activebackground='#e67e22',
+            relief='flat',
+            bd=0,
+            cursor='hand2',
+            width=4,
+            command=lambda: self.set_duration(5)
+        )
+        duration_5_btn.pack(side=tk.LEFT, padx=5)
+        
+        duration_10_btn = tk.Button(
+            duration_frame,
+            text="10s",
+            font=('Arial', 10, 'bold'),
+            bg='#27ae60',
+            fg='white',
+            activebackground='#229954',
+            relief='flat',
+            bd=0,
+            cursor='hand2',
+            width=4,
+            command=lambda: self.set_duration(10)
+        )
+        duration_10_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Store duration buttons for styling
+        self.duration_buttons = {5: duration_5_btn, 10: duration_10_btn}
+        self.set_duration(10)  # Set default
+        
         # Click count display
         self.click_count_label = tk.Label(
             self.root,
@@ -140,7 +190,7 @@ class CPSTester:
         # Reset button
         reset_btn = tk.Button(
             self.root,
-            text="Reset",
+            text="Reset All Scores",
             font=('Arial', 12, 'bold'),
             bg='#e74c3c',
             fg='white',
@@ -149,9 +199,23 @@ class CPSTester:
             relief='flat',
             bd=0,
             cursor='hand2',
-            command=self.reset_timer
+            command=self.reset_all_scores
         )
         reset_btn.pack(pady=20)
+        
+    def set_duration(self, duration):
+        """Set the test duration and update button styles"""
+        if self.test_active or self.countdown_active:
+            return  # Don't change duration during active test
+            
+        self.test_duration = duration
+        
+        # Update button styles
+        for dur, btn in self.duration_buttons.items():
+            if dur == duration:
+                btn.config(bg='#27ae60', activebackground='#229954')  # Green for selected
+            else:
+                btn.config(bg='#7f8c8d', activebackground='#95a5a6')  # Gray for unselected
         
     def darken_color(self, color):
         """Darken a hex color for active state"""
@@ -175,81 +239,145 @@ class CPSTester:
     
     def on_click(self, click_type):
         """Handle button clicks"""
-        current_time = time.time()
+        # If countdown or test is active, ignore mode changes
+        if self.countdown_active or (self.test_active and self.current_mode != click_type):
+            if not self.test_active:
+                return
+            elif self.current_mode != click_type:
+                return
         
-        # If this is a new mode or first click, reset everything
-        if self.current_mode != click_type:
-            self.reset_timer()
-            self.current_mode = click_type
-            self.mode_label.config(text=f"Mode: {click_type}")
+        # If no test is active, start countdown
+        if not self.test_active and not self.countdown_active:
+            self.start_test(click_type)
+            return
         
-        # First click starts the timer
-        if self.clicks == 0:
-            self.start_time = current_time
-            self.start_timer_thread()
-        
-        self.clicks += 1
-        self.last_click_time = current_time
-        self.update_display()
+        # Count clicks during active test
+        if self.test_active and self.current_mode == click_type:
+            self.clicks += 1
+            self.update_display()
     
-    def start_timer_thread(self):
-        """Start the timer thread"""
-        if self.timer_thread and self.timer_thread.is_alive():
-            self.timer_running = False
-            self.timer_thread.join()
+    def start_test(self, click_type):
+        """Start the countdown and test sequence"""
+        self.current_mode = click_type
+        self.mode_label.config(text=f"Get ready for {click_type}!")
+        self.countdown_active = True
+        self.start_countdown()
+    
+    def start_countdown(self):
+        """Start the 3-2-1 countdown"""
+        def countdown_sequence():
+            for i in [3, 2, 1]:
+                if not self.countdown_active:
+                    return
+                self.root.after(0, lambda count=i: self.cps_label.config(
+                    text=f"Starting in {count}...", fg='#ff6b6b'
+                ))
+                time.sleep(1)
+            
+            if self.countdown_active:
+                self.root.after(0, self.begin_test)
         
-        self.timer_running = True
-        self.timer_thread = threading.Thread(target=self.timer_worker)
-        self.timer_thread.daemon = True
-        self.timer_thread.start()
+        thread = threading.Thread(target=countdown_sequence)
+        thread.daemon = True
+        thread.start()
     
-    def timer_worker(self):
-        """Background timer that stops CPS calculation after inactivity"""
-        while self.timer_running:
-            time.sleep(0.1)
-            if self.last_click_time and time.time() - self.last_click_time > 2.0:
-                # No clicks for 2 seconds, stop the timer
-                self.timer_running = False
-                self.root.after(0, self.finalize_results)
-                break
+    def begin_test(self):
+        """Begin the actual clicking test"""
+        self.countdown_active = False
+        self.test_active = True
+        self.clicks = 0
+        self.start_time = time.time()
+        
+        self.cps_label.config(text="GO! Start clicking!", fg='#00ff00')
+        self.mode_label.config(text=f"Testing: {self.current_mode}")
+        
+        # Start the test timer
+        self.start_test_timer()
     
-    def finalize_results(self):
-        """Finalize and display final CPS"""
-        if self.clicks > 0 and self.start_time and self.last_click_time and self.current_mode:
-            duration = self.last_click_time - self.start_time
+    def start_test_timer(self):
+        """Start the fixed-duration test timer"""
+        def test_timer():
+            end_time = self.start_time + self.test_duration
+            while self.test_active and time.time() < end_time:
+                remaining = end_time - time.time()
+                if remaining > 0:
+                    self.root.after(0, lambda r=remaining: self.update_timer_display(r))
+                    time.sleep(0.1)
+                else:
+                    break
+            
+            if self.test_active:
+                self.root.after(0, self.end_test)
+        
+        thread = threading.Thread(target=test_timer)
+        thread.daemon = True
+        thread.start()
+    
+    def update_timer_display(self, remaining):
+        """Update the timer display during test"""
+        if self.clicks > 0 and self.start_time:
+            duration = time.time() - self.start_time
             if duration > 0:
-                cps = self.clicks / duration
-                # Update the stored CPS for this click type
-                self.last_cps[self.current_mode] = cps
-                # Update the display
-                self.score_labels[self.current_mode].config(text=f"{self.current_mode}: {cps:.2f}")
-                self.cps_label.config(text=f"Final CPS: {cps:.2f}")
+                current_cps = self.clicks / duration
+                self.cps_label.config(
+                    text=f"CPS: {current_cps:.2f} | Time: {remaining:.1f}s",
+                    fg='#00ff00'
+                )
+    
+    def end_test(self):
+        """End the test and calculate final results"""
+        if not self.test_active:
+            return
+            
+        self.test_active = False
+        
+        if self.clicks > 0:
+            final_cps = self.clicks / self.test_duration
+            # Update the stored CPS for this click type
+            self.last_cps[self.current_mode] = final_cps
+            # Update the display
+            self.score_labels[self.current_mode].config(text=f"{self.current_mode}: {final_cps:.2f}")
+            self.cps_label.config(text=f"Final CPS: {final_cps:.2f}", fg='#ffd700')
+            self.mode_label.config(text=f"Test complete! {self.clicks} clicks in {self.test_duration}s")
+        else:
+            self.cps_label.config(text="No clicks recorded!", fg='#e74c3c')
+            self.mode_label.config(text="Test ended - no clicks detected")
+        
+        # Reset for next test
+        self.current_mode = None
+        self.clicks = 0
+        self.start_time = None
     
     def update_display(self):
-        """Update the CPS and click count display"""
-        if self.clicks > 0 and self.start_time:
-            current_time = time.time()
-            duration = current_time - self.start_time
-            if duration > 0:
-                cps = self.clicks / duration
-                self.cps_label.config(text=f"Current CPS: {cps:.2f}")
-        
+        """Update the click count display"""
         self.click_count_label.config(text=f"Clicks: {self.clicks}")
     
-    def reset_timer(self):
-        """Reset all timer values"""
+    def reset_all_scores(self):
+        """Reset all scores and current test"""
+        # Stop any active test or countdown
+        self.countdown_active = False
+        self.test_active = False
         self.timer_running = False
-        if self.timer_thread and self.timer_thread.is_alive():
-            self.timer_thread.join()
         
+        # Reset all variables
         self.clicks = 0
         self.start_time = None
         self.last_click_time = None
         self.current_mode = None
         
-        self.cps_label.config(text="Current CPS: 0.00")
+        # Reset all stored scores
+        for click_type in self.last_cps:
+            self.last_cps[click_type] = 0.00
+            self.score_labels[click_type].config(text=f"{click_type}: 0.00")
+        
+        # Reset display
+        self.cps_label.config(text="Current CPS: 0.00", fg='#00ff00')
         self.click_count_label.config(text="Clicks: 0")
         self.mode_label.config(text="Select a click type to start")
+    
+    def reset_timer(self):
+        """Reset current timer (kept for compatibility)"""
+        self.reset_all_scores()
 
 def main():
     root = tk.Tk()
